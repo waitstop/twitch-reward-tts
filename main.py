@@ -1,14 +1,21 @@
-from os import makedirs, path
-from flask import Flask, request, send_file
+from io import BytesIO
+from os import makedirs, path, remove
+from flask import Flask, after_this_request, request, send_file
 import pyttsx3
 import uuid
-import torch.nn as nn
-
-from rvc_model import VoiceConversionModel
+from rvc_python.infer import RVCInference
 
 
 tts = pyttsx3.init()
+rvc = RVCInference()
 app = Flask(__name__)
+
+model_paths = {
+    "villager": "models/villager/model.pth",
+    "житель": "models/villager/model.pth",
+    "leavsy": "models/leavsy/model.pth",
+    "ливси": "models/leavsy/model.pth"
+}
 
 def text_to_speech(text: str) -> str:
     makedirs("audio_files", exist_ok=True)
@@ -18,12 +25,42 @@ def text_to_speech(text: str) -> str:
     engine.runAndWait()
     return output_path
 
+def clone_voice(input_path: str, output_path: str, model_path: str):
+    rvc.load_model(model_path)
+    rvc.infer_file(input_path, output_path)
+    return output_path
+
 @app.route('/synthesize', methods=['POST'])
 def synthesize():
     data = request.get_json()
+
     text = data['text']
+
+    model = data.get('model', 'villager')  # Здесь 'villager' — это дефолтное значение
+    if model not in model_paths:
+        return {"message": f"Модель '{model}' не найдена."}, 400  # Возвращаем ошибку, если модель не существует
+    model = model_paths[data['model']]
+
     audio_file = text_to_speech(text)
-    return send_file(audio_file, mimetype="audio/mpeg")
+    processed_voice = clone_voice(
+        audio_file,
+        f"audio_files/{uuid.uuid4()}.mp3",
+        model
+        )
+    
+    with open(processed_voice, 'rb') as f:
+        audio_data = BytesIO(f.read())
+
+    @after_this_request
+    def _(response):
+        try:
+            remove(audio_file)
+            remove(processed_voice)
+        except Exception as e:
+            print(f"Ошибка при удалении файлов: {e}")
+        return response
+    
+    return send_file(audio_data, mimetype="audio/mpeg", as_attachment=True, download_name="processed_voice.mp3")
 
 
 if __name__ == "__main__":
